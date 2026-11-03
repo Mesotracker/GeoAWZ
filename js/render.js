@@ -30,6 +30,7 @@ const Render = {
   init(canvas) {
     this.cv = canvas; this.x = canvas.getContext('2d');
     this.fog = null; this.light = U.canvas(10, 10); this.lx = this.light.getContext('2d');
+    this.grade = null; this.vig = null; this.lightValid = false; this.lightTick = 0;
     this.weather = []; for (let i = 0; i < 420; i++) this.weather.push({ x: Math.random(), y: Math.random(), s: Math.random() });
   },
   setMap(M) {
@@ -458,6 +459,7 @@ const Render = {
     this.drawCountryLabels(x, v);
     this.drawOre(x, v);
     this.drawEntities(x, v);
+    this.drawLightPass(x, v); // world-space key light: explosions illuminate terrain and units
     FX.draw(x, v);
     this.drawAir(x, v);
     Strike.draw(x, v);
@@ -472,7 +474,17 @@ const Render = {
     else if (this.lightValid) x.drawImage(this.light, 0, 0, v.W, v.H);
     this.drawWeather(x, v);
     if (G.nuclearWinter) { x.fillStyle = 'rgba(34,30,26,0.3)'; x.fillRect(0, 0, v.W, v.H); }
-    if (!this.vig || this.vig.w !== v.W || this.vig.h !== v.H) { const c = U.canvas(v.W, v.H), g = c.getContext('2d'), gr = g.createRadialGradient(v.W / 2, v.H / 2, Math.min(v.W, v.H) * 0.45, v.W / 2, v.H / 2, Math.max(v.W, v.H) * 0.75); gr.addColorStop(0, 'rgba(0,0,0,0)'); gr.addColorStop(1, 'rgba(4,8,10,0.42)'); g.fillStyle = gr; g.fillRect(0, 0, v.W, v.H); this.vig = { c, w: v.W, h: v.H }; }
+    this.drawGrade(x, v); // warm/cool split tone, golden-hour key and blue shadow fill
+    if (!this.vig || this.vig.w !== v.W || this.vig.h !== v.H) {
+      const c = U.canvas(v.W, v.H), g = c.getContext('2d');
+      const gr = g.createRadialGradient(v.W / 2, v.H / 2, Math.min(v.W, v.H) * 0.36, v.W / 2, v.H / 2, Math.max(v.W, v.H) * 0.78);
+      gr.addColorStop(0, 'rgba(0,0,0,0)'); gr.addColorStop(0.62, 'rgba(5,8,13,0.07)'); gr.addColorStop(1, 'rgba(3,5,9,0.55)');
+      g.fillStyle = gr; g.fillRect(0, 0, v.W, v.H);
+      const sun = g.createRadialGradient(v.W * 0.16, v.H * 0.08, 0, v.W * 0.16, v.H * 0.08, Math.max(v.W, v.H) * 0.6);
+      sun.addColorStop(0, 'rgba(255,206,140,0.035)'); sun.addColorStop(1, 'rgba(255,206,140,0)');
+      g.fillStyle = sun; g.fillRect(0, 0, v.W, v.H);
+      this.vig = { c, w: v.W, h: v.H };
+    }
     x.drawImage(this.vig.c, 0, 0, v.W, v.H);
     if (this.flash > 0.01) { x.fillStyle = 'rgba(255,248,235,' + this.flash.toFixed(3) + ')'; x.fillRect(0, 0, v.W, v.H); this.flash *= 0.9; }
     UI.drawScreen && UI.drawScreen(x, v);
@@ -554,7 +566,9 @@ const Render = {
     // wrecks
     for (const w of G.wrecks) {
       if (!this.inView(w, v) || (fogOn && !Vis.explored(P, w.x, w.y))) continue;
-      const sp = SPR.unit(w.type, fac(w.owner).key); x.save(); x.translate(w.x, w.y); x.rotate(w.a); if (sp.k) x.scale(sp.k, sp.k); x.globalAlpha = 0.9; x.drawImage(sp.wreck, -sp.w / 2, -sp.h / 2, sp.w, sp.h); x.restore();
+      const wd = UNITS[w.type], wt = wd && wd.robotic && fac(w.owner).aiLab ? fac(w.owner).aiLab.tier : 1;
+      const sp = SPR.unit(w.type, fac(w.owner).key, wt), kx = sp.kx || sp.k || 1, ky = sp.ky || sp.k || 1;
+      x.save(); x.translate(w.x, w.y); x.rotate(w.a); x.scale(kx, ky); x.globalAlpha = 0.9; x.drawImage(sp.wreck, -sp.w / 2, -sp.h / 2, sp.w, sp.h); x.restore();
     }
     // civilians (sub-pixel when zoomed far out: skipped)
     if (v.z > 0.3) for (const a of G.civs) {
@@ -591,7 +605,7 @@ const Render = {
     const fk = fac(u.owner).key, aiTier = u.d.robotic && fac(u.owner).aiLab ? fac(u.owner).aiLab.tier : 1;
     const sp = SPR.unit(u.type, fk, aiTier), sel = G.sel.includes(u);
     if (sel) { x.strokeStyle = friendly(G.player, u.owner) ? '#9fe0a8' : '#f08070'; x.lineWidth = 1.2; x.beginPath(); x.ellipse(u.x, u.y + 1, u.rad + 3, (u.rad + 3) * 0.8, 0, 0, 6.283); x.stroke(); }
-    const k = sp.k || 1, z = G.cam.z;
+    const k = sp.k || 1, kx = sp.kx || k, ky = sp.ky || k, z = G.cam.z;
     if (sp.inf) {
       // a squad is drawn as its individual soldiers at real size, in a loose wedge
       const n = u.d.figs || 1, fs = 16 * k, step = Math.floor(u.anim * 6), F = formOf(u.d);
@@ -607,12 +621,12 @@ const Render = {
       this.unitHud(x, u, sel);
       return;
     }
-    if (sp.shadow && !(u.d.cat === 'sea' && u.d.ab && u.d.ab.submerge)) { x.save(); x.translate(u.x + 2.6, u.y + 3.4); x.rotate(u.a); x.scale(k, k); x.drawImage(sp.shadow, -sp.w / 2, -sp.h / 2, sp.w, sp.h); if (sp.turShadow) { x.translate(sp.tox, 0); x.rotate(u.ta - u.a); x.drawImage(sp.turShadow, -sp.tw / 2 + 1, -sp.th / 2 + 1, sp.tw, sp.th); } x.restore(); }
+    if (sp.shadow && !(u.d.cat === 'sea' && u.d.ab && u.d.ab.submerge)) { x.save(); x.translate(u.x + 2.6, u.y + 3.4); x.rotate(u.a); x.scale(kx, ky); x.drawImage(sp.shadow, -sp.w / 2, -sp.h / 2, sp.w, sp.h); if (sp.turShadow) { x.translate(sp.tox, 0); x.rotate(u.ta - u.a); x.drawImage(sp.turShadow, -sp.tw / 2 + 1, -sp.th / 2 + 1, sp.tw, sp.th); } x.restore(); }
     x.save(); x.translate(u.x, u.y);
     const hidden = u.owner === G.player && ((u.d.ab && u.d.ab.stealth) || (u.d.ab && u.d.ab.submerge && G.time - u.lastFire > 4));
     if (hidden) x.globalAlpha = 0.5;
     {
-      x.rotate(u.a); x.scale(k, k);
+      x.rotate(u.a); x.scale(kx, ky);
       if (u.d.cat === 'air' && u.alt <= 0.3) x.globalAlpha = 0.95;
       x.drawImage(sp.body, -sp.w / 2, -sp.h / 2, sp.w, sp.h);
       if (sp.tur) { x.translate(sp.tox, 0); x.rotate(u.ta - u.a); x.drawImage(sp.tur, -sp.tw / 2, -sp.th / 2, sp.tw, sp.th); }
@@ -644,15 +658,16 @@ const Render = {
     for (const u of G.units) {
       if (u.dead || u.d.cat !== 'air' || u.alt <= 0.3 || !this.inView(u, v, 120) || !this.seen(u)) continue;
       const aiTier = u.d.robotic && fac(u.owner).aiLab ? fac(u.owner).aiLab.tier : 1;
-      const sp = SPR.unit(u.type, fac(u.owner).key, aiTier), h = u.alt * 26, k = sp.k || 1;
-      x.save(); x.translate(u.x + h * 0.6, u.y + h * 0.9); x.rotate(u.a); x.scale(k, k); x.drawImage(sp.shadow, -sp.w / 2, -sp.h / 2, sp.w, sp.h); x.restore();
+      const sp = SPR.unit(u.type, fac(u.owner).key, aiTier), h = u.alt * 26, k = sp.k || 1, kx = sp.kx || k, ky = sp.ky || k;
+      x.save(); x.translate(u.x + h * 0.6, u.y + h * 0.9); x.rotate(u.a); x.scale(kx, ky); x.drawImage(sp.shadow, -sp.w / 2, -sp.h / 2, sp.w, sp.h); x.restore();
       if (G.sel.includes(u)) { x.strokeStyle = '#9fe0a8'; x.lineWidth = 1; x.beginPath(); x.ellipse(u.x, u.y - h, u.rad + 3, u.rad + 3, 0, 0, 6.283); x.stroke(); line(x, u.x, u.y - h, u.x, u.y, 'rgba(159,224,168,0.3)', 1); }
-      x.save(); x.translate(u.x, u.y - h); x.rotate(u.a); x.scale(k, k); x.drawImage(sp.body, -sp.w / 2, -sp.h / 2, sp.w, sp.h);
+      x.save(); x.translate(u.x, u.y - h); x.rotate(u.a); x.scale(kx, ky); x.drawImage(sp.body, -sp.w / 2, -sp.h / 2, sp.w, sp.h);
       if (sp.rotor) for (const [rx, ry, rr] of sp.rotor) { x.save(); x.translate(rx, ry); x.rotate(G.time * 28 + rx); x.strokeStyle = 'rgba(30,30,30,0.55)'; x.lineWidth = 1.6; x.beginPath(); x.moveTo(-rr, 0); x.lineTo(rr, 0); x.moveTo(0, -rr); x.lineTo(0, rr); x.stroke(); circ(x, 0, 0, rr, 'rgba(40,40,40,0.08)'); x.restore(); }
       x.restore();
       if (G.cam.z < 0.7) this.marker(x, { x: u.x, y: u.y - h, owner: u.owner, d: u.d }, G.cam.z);
       if (u.d.plane && !G.paused && Math.random() < 0.72) {
-        const span = u.type === 'bomber' ? 21 : u.type === 'awacs' ? 17 : u.type === 'ucav' || u.type === 'robofighter' || u.type === 'cas' || u.type === 'reconplane' ? 14 : 11;
+        // wingtip vortices start at the scaled wingtips, not a hard-coded screen offset
+        const span = U.clamp((sp.h - 6) * ky * 0.45, 8, 72);
         FX.contrail(u.x, u.y - h, u.a, span, u.type !== 'reconplane');
       }
       if (G.sel.includes(u) || u.hp < u.maxHp) this.bar(x, u.x, u.y - h - u.rad - 6, Math.min(60, u.rad * 2), u.hp / u.maxHp);
@@ -729,13 +744,100 @@ const Render = {
       for (const b of G.blds) if (!b.dead && this.inView(b, v, 80) && !fac(b.owner).lowPower) glow(b.x, b.y, 50 + b.w * 12, 0.85);
       for (const a of G.civs) if (a.veh && !a.dead && this.inView(a, v, 40)) glow(a.x + Math.cos(a.a) * 14, a.y + Math.sin(a.a) * 14, 22, 0.6);
       for (const u of G.units) if (!u.dead && !u.inside && u.d.cat === 'veh' && u.owner === G.player && this.inView(u, v, 40)) glow(u.x + Math.cos(u.a) * 18, u.y + Math.sin(u.a) * 18, 30, 0.5);
-      for (const L of FX.lights) glow(L.x, L.y, L.r, (L.life / L.max).toFixed(2));
+      for (const L of FX.lights) {
+        const life = U.clamp(L.life / L.max, 0, 1), flick = 0.93 + 0.07 * Math.sin(G.time * 24 + (L.phase || 0));
+        glow(L.x, L.y, L.r, Math.min(1, life * flick * (0.65 + (L.bloom || 0.35) * 0.55)).toFixed(2));
+      }
       for (const p of G.proj) if (p.type !== 'bullet') glow(p.x, p.y - (p.z || 0), 18, 0.6);
+      // Colour the pools of light instead of merely punching white holes in the dark.
+      l.globalCompositeOperation = 'lighter';
+      for (const L of FX.lights) {
+        const life = U.clamp(L.life / L.max, 0, 1); if (life <= 0) continue;
+        const sx = (L.x - v.x0) * z, sy = (L.y - v.y0) * z, rr = L.r * z;
+        if (sx < -rr || sy < -rr || sx > W + rr || sy > H + rr) continue;
+        const a = Math.min(0.34, (L.bloom || 0.35) * life * 0.24);
+        const cg = l.createRadialGradient(sx, sy, 0, sx, sy, rr);
+        cg.addColorStop(0, 'rgba(' + (L.col || '255,190,110') + ',' + a.toFixed(3) + ')');
+        cg.addColorStop(0.5, 'rgba(' + (L.col || '255,190,110') + ',' + (a * 0.24).toFixed(3) + ')');
+        cg.addColorStop(1, 'rgba(' + (L.col || '255,190,110') + ',0)');
+        l.fillStyle = cg; l.fillRect(sx - rr, sy - rr, rr * 2, rr * 2);
+      }
+      l.globalCompositeOperation = 'source-over';
     }
     l.globalCompositeOperation = 'source-over';
     const du = Clock.dusk(); if (du > 0.02) { l.fillStyle = 'rgba(255,120,50,' + (du * 0.12).toFixed(3) + ')'; l.fillRect(0, 0, W, H); }
     x.drawImage(this.light, 0, 0, v.W, v.H); this.lightValid = true;
   },
+  /* World-space light pass, every frame: a detonation is not just a sprite,
+     it is a light source that washes over the terrain and nearby silhouettes.
+     A horizontal anamorphic streak gives the bright transient a lens bloom. */
+  drawLightPass(x, v) {
+    if (!FX.lights.length || v.z < 0.35) return;
+    const du = Clock.dusk(), dark = Clock.darkness(), boost = 1 + du * 0.35 + dark * 0.22;
+    let drawn = 0;
+    x.save(); x.globalCompositeOperation = 'lighter';
+    for (const L of FX.lights) {
+      const life = U.clamp(L.life / L.max, 0, 1); if (life <= 0 || drawn >= 48) continue;
+      const r = Math.min(L.r, 1200) * (0.78 + 0.22 * (1 - life));
+      if (!this.inView(L, v, r * 1.1)) continue;
+      drawn++;
+      const flick = 0.92 + 0.08 * Math.sin(G.time * 38 + (L.phase || 0));
+      const a = U.clamp((L.bloom || 0.35) * Math.pow(life, 1.25) * flick * boost, 0, 0.82);
+      const col = L.col || '255,190,110';
+      const g = x.createRadialGradient(L.x, L.y, 0, L.x, L.y, r);
+      g.addColorStop(0, 'rgba(' + col + ',' + a.toFixed(3) + ')');
+      g.addColorStop(0.3, 'rgba(' + col + ',' + (a * 0.3).toFixed(3) + ')');
+      g.addColorStop(1, 'rgba(' + col + ',0)');
+      x.fillStyle = g; x.fillRect(L.x - r, L.y - r, r * 2, r * 2);
+      if ((L.bloom || 0.35) > 0.5 && r > 32) {
+        const sw = r * 1.8, sh = Math.max(1.4, r * 0.02);
+        const sg = x.createLinearGradient(L.x - sw, L.y, L.x + sw, L.y);
+        sg.addColorStop(0, 'rgba(' + col + ',0)');
+        sg.addColorStop(0.5, 'rgba(' + col + ',' + (a * 0.3).toFixed(3) + ')');
+        sg.addColorStop(1, 'rgba(' + col + ',0)');
+        x.fillStyle = sg; x.fillRect(L.x - sw, L.y - sh / 2, sw * 2, sh);
+      }
+    }
+    x.restore();
+  },
+
+  /* Cached screen-space colour grade: warm key from the upper left, cool
+     shadow fill, golden-hour glare and a whisper of film grain. Rebuilt only
+     when the viewport or the light/weather state changes appreciably. */
+  drawGrade(x, v) {
+    const W = Math.ceil(v.W), H = Math.ceil(v.H);
+    const du = Clock.dusk(), dark = Clock.darkness();
+    const wt = G.weather || {}, overcast = (wt.type === 'overcast' || wt.type === 'storm' || wt.type === 'fog') ? (wt.k || 0) : 0;
+    const key = [W, H, Math.round(du * 12), Math.round(dark * 12), Math.round(overcast * 8), G.era || ''].join(':');
+    if (!this.grade || this.grade.key !== key) {
+      const c = U.canvas(W, H), g = c.getContext('2d');
+      const warm = 0.035 + du * 0.105 + (1 - dark) * 0.012;
+      const cool = 0.028 + dark * 0.085 + overcast * 0.035;
+      const gr = g.createLinearGradient(0, 0, W, H);
+      gr.addColorStop(0, 'rgba(255,196,120,' + warm.toFixed(3) + ')');
+      gr.addColorStop(0.45, 'rgba(245,245,240,0.012)');
+      gr.addColorStop(1, 'rgba(26,50,88,' + cool.toFixed(3) + ')');
+      g.fillStyle = gr; g.fillRect(0, 0, W, H);
+      if (du > 0.02 || dark < 0.95) {
+        const sun = g.createRadialGradient(W * 0.18, H * 0.05, 0, W * 0.18, H * 0.05, Math.max(W, H) * 0.82);
+        sun.addColorStop(0, 'rgba(255,214,150,' + (0.025 + du * 0.065).toFixed(3) + ')');
+        sun.addColorStop(0.55, 'rgba(255,214,150,0.008)');
+        sun.addColorStop(1, 'rgba(255,214,150,0)');
+        g.fillStyle = sun; g.fillRect(0, 0, W, H);
+      }
+      if (SPR.noise) {
+        const pat = g.createPattern(SPR.noise(), 'repeat');
+        if (pat) { g.save(); g.globalCompositeOperation = 'overlay'; g.globalAlpha = 0.018; g.fillStyle = pat; g.fillRect(0, 0, W, H); g.restore(); }
+      }
+      this.grade = { c, key, w: W, h: H };
+    }
+    x.save();
+    x.globalCompositeOperation = 'soft-light';
+    if (x.globalCompositeOperation !== 'soft-light') x.globalCompositeOperation = 'overlay';
+    x.drawImage(this.grade.c, 0, 0, W, H);
+    x.restore();
+  },
+
   drawWeather(x, v) {
     const w = G.weather, k = w.k; if (k < 0.02) return;
     const t = G.time;
