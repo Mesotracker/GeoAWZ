@@ -33,7 +33,7 @@ const Sound = {
   },
   play(name, x, y, k = 1) {
     if (!this.on || !this.ctx || G.paused) return;
-    const now = this.ctx.currentTime, minGap = { rifle: 0.05, mg: 0.06, auto: 0.06, die: 0.15, boom: 0.06 }[name] || 0.03;
+    const now = this.ctx.currentTime, minGap = { rifle: 0.05, mg: 0.06, auto: 0.06, die: 0.15, boom: 0.06, bigboom: 0.12 }[name] || 0.03;
     if (now - (this.last[name] || 0) < minGap) return; this.last[name] = now;
     const g = this.gainAt(x, y) * k; if (g < 0.03) return;
     if (this.buffers[name]) { const s = this.ctx.createBufferSource(), gg = this.ctx.createGain(); s.buffer = this.buffers[name]; gg.gain.value = g; s.connect(gg); gg.connect(this.master); s.start(); return; }
@@ -47,8 +47,26 @@ const Sound = {
       case 'rocket': case 'salvo': this.burst(0.45, 0.8, 0, 'noise', 0.2 * g, 2400); break;
       case 'missile': this.burst(0.6, 600, 200, 'sawtooth', 0.04 * g, 1400); this.burst(0.5, 1, 0, 'noise', 0.12 * g, 3000); break;
       case 'torp': this.burst(0.5, 200, 80, 'sine', 0.12 * g); break;
-      case 'boom': this.burst(0.7 * Math.min(2, k + 0.5), 0.4, 0, 'noise', 0.5 * g, 500); this.burst(0.5, 70, 25, 'sine', 0.4 * g); break;
-      case 'bigboom': this.burst(1.6, 0.3, 0, 'noise', 0.7 * g, 400); this.burst(1.2, 55, 20, 'sine', 0.6 * g); break;
+      // Layered blast: supersonic crack, broadband shock, sub-bass chest thump,
+      // low rolling tail and scattered secondary debris crackles.
+      case 'boom': {
+        const dur = Math.min(2, k + 0.5);
+        this.burst(0.045, 1.8, 0, 'noise', 0.34 * g, 6500);
+        this.burst(0.46 * dur, 0.55, 0, 'noise', 0.45 * g, 900);
+        this.burst(0.9 * dur, 72, 22, 'sine', 0.44 * g);
+        this.burst(1.5 * dur, 0.28, 0, 'noise', 0.15 * g, 260);
+        if (g > 0.1) for (let i = 0; i < 3; i++) setTimeout(() => this.ctx && this.burst(0.085, U.rnd(1.1, 1.8), 0, 'noise', (0.075 - i * 0.018) * g, 3200), 65 + i * 105);
+        break;
+      }
+      case 'bigboom': {
+        this.burst(0.06, 2.1, 0, 'noise', 0.4 * g, 7200);
+        this.burst(1.2, 0.42, 0, 'noise', 0.6 * g, 700);
+        this.burst(2.2, 56, 18, 'sine', 0.66 * g);
+        this.burst(3.0, 0.22, 0, 'noise', 0.22 * g, 220);
+        setTimeout(() => this.ctx && this.burst(1.6, 0.18, 0, 'noise', 0.16 * g, 180), 340);
+        if (g > 0.08) for (let i = 0; i < 5; i++) setTimeout(() => this.ctx && this.burst(0.11, U.rnd(1.0, 1.9), 0, 'noise', (0.07 - i * 0.01) * g, 2800), 120 + i * 130);
+        break;
+      }
       case 'whistle': this.burst(0.7, 1400, 500, 'sine', 0.05 * g); break;
       case 'die': this.burst(0.2, 300, 120, 'triangle', 0.03 * g); break;
       case 'click': this.burst(0.05, 900, 600, 'square', 0.04); break;

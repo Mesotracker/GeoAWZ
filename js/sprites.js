@@ -161,9 +161,22 @@ SPR.unit = function (key, fk, aiTier = 1) {
   if (!out.inf) out.shadow = silhouette(out.body, d.cat === 'air' ? 'rgba(0,0,0,0.3)' : 'rgba(0,0,0,0.38)', d.cat === 'air' ? 3 : 2);
   if (out.tur) out.turShadow = silhouette(out.tur, 'rgba(0,0,0,0.3)', 2);
   out.wreck = silhouette(out.body, 'rgba(26,22,20,0.92)');
-  // real-world scale: stretch the drawn hull so its length matches the unit's real length (realism.js)
-  if (d.len && !out.inf) { const L = out.w - (d.cat === 'air' ? 6 : 10); out.k = (d.len * SCALE.PX_PER_M) / Math.max(4, L); }
-  else if (out.inf) out.k = d.len ? (d.len * SCALE.PX_PER_M) / 10 : 1;
+  // Visual scale. Ground and naval hulls keep their true length. Aircraft are
+  // measured on BOTH axes (fuselage and wingspan) against the bomber-anchored
+  // readable footprint in realism.js; robotic airframes also grow with AI tier.
+  if (out.inf) out.k = d.len ? (d.len * SCALE.PX_PER_M) / 10 : 1;
+  else if (d.len && d.cat === 'air') {
+    const tierK = d.robotic ? (AI_TIER_STYLE[U.clamp(aiTier | 0, 1, 12)] || AI_TIER_STYLE[1]).scale : 1;
+    out.kx = ((d.viewLen || d.len) * SCALE.PX_PER_M / Math.max(4, out.w - 6)) * tierK;
+    out.ky = ((d.viewWid || d.wid) * SCALE.PX_PER_M / Math.max(4, out.h - 6)) * tierK;
+    // Rotorcraft already draw a circular disc that spans their real width:
+    // stretch those uniformly so the blades stay round. Fixed-wing aircraft
+    // get a bounded two-axis correction instead of an extreme squash.
+    if (out.rotor) out.ky = out.kx;
+    else out.ky = U.clamp(out.ky, out.kx * 0.65, out.kx * 1.5);
+    out.k = out.kx;
+  } else out.k = d.len ? (d.len * SCALE.PX_PER_M) / Math.max(4, out.w - 10) : 1;
+  if (out.kx == null) out.kx = out.ky = out.k;
   SPR.cache.set(ck, out);
   return out;
 };
