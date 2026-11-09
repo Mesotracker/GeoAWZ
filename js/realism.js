@@ -33,7 +33,10 @@ const REAL_UNITS = {
   mbt: [9.97, 3.75, 15, 170], robotank: [8, 3.4, 18, 220], heavy: [11, 3.9, 11, 170], spg: [11.7, 3.6, 13, 160], mlrs: [7, 2.4, 22, 160],
   aatruck: [7.7, 3.3, 18, 220], engveh: [9, 3.8, 12, 140], recovery: [9, 3.5, 17, 140], supply: [8.5, 2.5, 20, 140], mammoth: [13, 5, 8, 190],
   mech: [6, 5, 14, 220], wavecutter: [26.8, 14.3, 22, 190],
-  recondrone: [1.2, 1.2, 18, 400], kamikaze: [1.6, 1.8, 30, 250], ucav: [11, 20, 60, 350], robofighter: [9, 8, 120, 320], fighter: [19, 13, 120, 300],
+  recondrone: [1.2, 1.2, 18, 400], kamikaze: [1.6, 1.8, 30, 250],
+  // Robotic combat aircraft use full-size airframes so they read at the same
+  // scale as crewed fighters; recon drones and loitering munitions stay small.
+  ucav: [19, 20, 60, 350], robofighter: [19, 13, 120, 320], fighter: [19, 13, 120, 300],
   bomber: [48, 56, 90, 260], gunship: [17.7, 14.6, 60, 260], thelo: [30, 18.3, 55, 220], reconplane: [16, 26, 90, 420], awacs: [46, 44, 75, 1500],
   cas: [16.3, 17.5, 80, 260], stratos: [29.8, 40.4, 55, 300],
   patrol: [30, 6, 20, 260], destroyer: [150, 20, 15, 330], tship: [120, 20, 10, 220], lcraft: [41, 9, 6, 190], sub: [110, 10, 12, 220], nsupply: [170, 25, 10, 200],
