@@ -621,16 +621,20 @@ const Render = {
       this.unitHud(x, u, sel);
       return;
     }
-    if (sp.shadow && !(u.d.cat === 'sea' && u.d.ab && u.d.ab.submerge)) { x.save(); x.translate(u.x + 2.6, u.y + 3.4); x.rotate(u.a); x.scale(kx, ky); x.drawImage(sp.shadow, -sp.w / 2, -sp.h / 2, sp.w, sp.h); if (sp.turShadow) { x.translate(sp.tox, 0); x.rotate(u.ta - u.a); x.drawImage(sp.turShadow, -sp.tw / 2 + 1, -sp.th / 2 + 1, sp.tw, sp.th); } x.restore(); }
+    // Hull and turret are scaled independently on both axes, so a tank's real
+    // width is not inflated by its longer sprite. Draw the turret in world
+    // space around its pivot to avoid shearing it as it rotates.
+    const ca = Math.cos(u.a), sa = Math.sin(u.a);
+    if (sp.shadow && !(u.d.cat === 'sea' && u.d.ab && u.d.ab.submerge)) {
+      x.save(); x.translate(u.x + 2.6, u.y + 3.4); x.rotate(u.a); x.scale(kx, ky); x.drawImage(sp.shadow, -sp.w / 2, -sp.h / 2, sp.w, sp.h); x.restore();
+      if (sp.turShadow) { x.save(); x.translate(u.x + 2.6 + ca * sp.tox * kx, u.y + 3.4 + sa * sp.tox * kx); x.rotate(u.ta); x.scale(kx, ky); x.drawImage(sp.turShadow, -sp.tw / 2 + 1, -sp.th / 2 + 1, sp.tw, sp.th); x.restore(); }
+    }
     x.save(); x.translate(u.x, u.y);
     const hidden = u.owner === G.player && ((u.d.ab && u.d.ab.stealth) || (u.d.ab && u.d.ab.submerge && G.time - u.lastFire > 4));
     if (hidden) x.globalAlpha = 0.5;
-    {
-      x.rotate(u.a); x.scale(kx, ky);
-      if (u.d.cat === 'air' && u.alt <= 0.3) x.globalAlpha = 0.95;
-      x.drawImage(sp.body, -sp.w / 2, -sp.h / 2, sp.w, sp.h);
-      if (sp.tur) { x.translate(sp.tox, 0); x.rotate(u.ta - u.a); x.drawImage(sp.tur, -sp.tw / 2, -sp.th / 2, sp.tw, sp.th); }
-    }
+    if (u.d.cat === 'air' && u.alt <= 0.3) x.globalAlpha = 0.95;
+    x.save(); x.rotate(u.a); x.scale(kx, ky); x.drawImage(sp.body, -sp.w / 2, -sp.h / 2, sp.w, sp.h); x.restore();
+    if (sp.tur) { x.save(); x.translate(ca * sp.tox * kx, sa * sp.tox * kx); x.rotate(u.ta); x.scale(kx, ky); x.drawImage(sp.tur, -sp.tw / 2, -sp.th / 2, sp.tw, sp.th); x.restore(); }
     x.restore();
     if (z < 0.7 && u.d.cat !== 'sea') this.marker(x, u, z);
     this.unitHud(x, u, sel);

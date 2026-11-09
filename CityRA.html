@@ -867,13 +867,6 @@ const SCALE = {
   KM_PER_TILE: 0.01,                                     // procedural maps: 10 m per tile
 };
 
-/* Aircraft readability: the 48 m strategic bomber is already drawn at true
-   scale. A gentle power curve lifts the 1–19 m airframes to a size the player
-   can actually see at tactical zoom without enlarging the bomber, reversing
-   the real-world size order, or changing the physical stats in the tooltips.
-   Sprites use viewLen / viewWid; len / wid stay physically accurate. */
-const AIR_VIEW = { REF_M: 48, CURVE: 0.55, MIN_M: 8.5 };
-
 /* units: [length m, width m, speed m/s, sight m (game), figures for infantry squads] */
 const REAL_UNITS = {
   rifle: [1.2, 0.6, 4.2, 140, 4], mg: [1.2, 0.6, 3.6, 140, 3], sniper: [1.3, 0.6, 4.0, 220, 2], engineer: [1.1, 0.6, 4.0, 120, 3],
@@ -916,13 +909,6 @@ const REAL_MISSILES = { cruise: 45, srbm: 50, cluster: 8, thermo: 120, ballistic
 
 const Realism = {
   apply() { this.convert(REAL_UNITS, REAL_WEAPONS, REAL_BLDS, false); for (const k in REAL_MISSILES) if (MISSILES[k]) MISSILES[k].splash = Math.round(REAL_MISSILES[k] * SCALE.PX_PER_M); },
-  // Visual size of one real-world aircraft dimension. The bomber and anything
-  // larger stay exact; smaller aircraft compress toward it for RTS readability.
-  airViewM(m) {
-    if (!(m > 0)) return AIR_VIEW.MIN_M;
-    if (m >= AIR_VIEW.REF_M) return m;
-    return Math.max(m, AIR_VIEW.MIN_M, AIR_VIEW.REF_M * Math.pow(m / AIR_VIEW.REF_M, AIR_VIEW.CURVE));
-  },
   // direct = ranges are already game metres (Napoleonic weapons are short-ranged enough to need no compression)
   convert(units, weapons, blds, direct) {
     const P = SCALE.PX_PER_M;
@@ -930,9 +916,11 @@ const Realism = {
       const d = UNITS[k], R = units[k]; if (!d) continue;
       const [len, wid, spd, sight, figs] = R;
       d.len = len; d.wid = wid; d.spd = spd * P; d.sight = sight / SCALE.M_PER_TILE;
-      if (d.cat === 'air') {
-        d.viewLen = this.airViewM(len); d.viewWid = this.airViewM(wid);
-      } else { delete d.viewLen; delete d.viewWid; }
+      // One exact 10 m tile scale everywhere: aircraft keep their real
+      // fuselage length and wingspan, so robotic and crewed airframes of the
+      // same physical size are drawn at the same size.
+      if (d.cat === 'air') { d.viewLen = len; d.viewWid = wid; }
+      else { delete d.viewLen; delete d.viewWid; }
       if (d.form) { // drilled formation: ranks x files with spacing (m)
         const [ranks, files, sx, sy] = d.form; d.figs = ranks * files;
         d.r = Math.max(4, 0.5 * Math.sqrt(Math.max(len, ranks * sy) * Math.max(wid, files * sx)) * P);
@@ -1129,21 +1117,22 @@ SPR.unit = function (key, fk, aiTier = 1) {
   if (!out.inf) out.shadow = silhouette(out.body, d.cat === 'air' ? 'rgba(0,0,0,0.3)' : 'rgba(0,0,0,0.38)', d.cat === 'air' ? 3 : 2);
   if (out.tur) out.turShadow = silhouette(out.tur, 'rgba(0,0,0,0.3)', 2);
   out.wreck = silhouette(out.body, 'rgba(26,22,20,0.92)');
-  // Visual scale. Ground and naval hulls keep their true length. Aircraft are
-  // measured on BOTH axes (fuselage and wingspan) against the bomber-anchored
-  // readable footprint in realism.js; robotic airframes also grow with AI tier.
+  // One exact 10 m tile scale for every unit. Ground hulls and aircraft are
+  // scaled on both real axes (length and width / wingspan), so a 10 m tank, a
+  // 19 m fighter and a 56 m bomber keep their true relative sizes. Robotic
+  // airframes no longer grow with the AI tier; tier shows in their art only.
   if (out.inf) out.k = d.len ? (d.len * SCALE.PX_PER_M) / 10 : 1;
-  else if (d.len && d.cat === 'air') {
-    const tierK = d.robotic ? (AI_TIER_STYLE[U.clamp(aiTier | 0, 1, 12)] || AI_TIER_STYLE[1]).scale : 1;
-    out.kx = ((d.viewLen || d.len) * SCALE.PX_PER_M / Math.max(4, out.w - 6)) * tierK;
-    out.ky = ((d.viewWid || d.wid) * SCALE.PX_PER_M / Math.max(4, out.h - 6)) * tierK;
-    // Rotorcraft already draw a circular disc that spans their real width:
-    // stretch those uniformly so the blades stay round. Fixed-wing aircraft
-    // get a bounded two-axis correction instead of an extreme squash.
+  else if (d.cat === 'air') {
+    out.kx = (d.viewLen || d.len || 10) * SCALE.PX_PER_M / Math.max(4, out.w - 6);
+    out.ky = (d.viewWid || d.wid || d.len || 10) * SCALE.PX_PER_M / Math.max(4, out.h - 6);
+    // Rotorcraft draw a circular disc; stretch them uniformly so blades stay round.
     if (out.rotor) out.ky = out.kx;
-    else out.ky = U.clamp(out.ky, out.kx * 0.65, out.kx * 1.5);
     out.k = out.kx;
-  } else out.k = d.len ? (d.len * SCALE.PX_PER_M) / Math.max(4, out.w - 10) : 1;
+  } else {
+    out.kx = (d.len || 10) * SCALE.PX_PER_M / Math.max(4, out.w - 10);
+    out.ky = (d.wid || d.len || 10) * SCALE.PX_PER_M / Math.max(4, out.h - 10);
+    out.k = out.kx;
+  }
   if (out.kx == null) out.kx = out.ky = out.k;
   SPR.cache.set(ck, out);
   return out;
@@ -8101,16 +8090,20 @@ const Render = {
       this.unitHud(x, u, sel);
       return;
     }
-    if (sp.shadow && !(u.d.cat === 'sea' && u.d.ab && u.d.ab.submerge)) { x.save(); x.translate(u.x + 2.6, u.y + 3.4); x.rotate(u.a); x.scale(kx, ky); x.drawImage(sp.shadow, -sp.w / 2, -sp.h / 2, sp.w, sp.h); if (sp.turShadow) { x.translate(sp.tox, 0); x.rotate(u.ta - u.a); x.drawImage(sp.turShadow, -sp.tw / 2 + 1, -sp.th / 2 + 1, sp.tw, sp.th); } x.restore(); }
+    // Hull and turret are scaled independently on both axes, so a tank's real
+    // width is not inflated by its longer sprite. Draw the turret in world
+    // space around its pivot to avoid shearing it as it rotates.
+    const ca = Math.cos(u.a), sa = Math.sin(u.a);
+    if (sp.shadow && !(u.d.cat === 'sea' && u.d.ab && u.d.ab.submerge)) {
+      x.save(); x.translate(u.x + 2.6, u.y + 3.4); x.rotate(u.a); x.scale(kx, ky); x.drawImage(sp.shadow, -sp.w / 2, -sp.h / 2, sp.w, sp.h); x.restore();
+      if (sp.turShadow) { x.save(); x.translate(u.x + 2.6 + ca * sp.tox * kx, u.y + 3.4 + sa * sp.tox * kx); x.rotate(u.ta); x.scale(kx, ky); x.drawImage(sp.turShadow, -sp.tw / 2 + 1, -sp.th / 2 + 1, sp.tw, sp.th); x.restore(); }
+    }
     x.save(); x.translate(u.x, u.y);
     const hidden = u.owner === G.player && ((u.d.ab && u.d.ab.stealth) || (u.d.ab && u.d.ab.submerge && G.time - u.lastFire > 4));
     if (hidden) x.globalAlpha = 0.5;
-    {
-      x.rotate(u.a); x.scale(kx, ky);
-      if (u.d.cat === 'air' && u.alt <= 0.3) x.globalAlpha = 0.95;
-      x.drawImage(sp.body, -sp.w / 2, -sp.h / 2, sp.w, sp.h);
-      if (sp.tur) { x.translate(sp.tox, 0); x.rotate(u.ta - u.a); x.drawImage(sp.tur, -sp.tw / 2, -sp.th / 2, sp.tw, sp.th); }
-    }
+    if (u.d.cat === 'air' && u.alt <= 0.3) x.globalAlpha = 0.95;
+    x.save(); x.rotate(u.a); x.scale(kx, ky); x.drawImage(sp.body, -sp.w / 2, -sp.h / 2, sp.w, sp.h); x.restore();
+    if (sp.tur) { x.save(); x.translate(ca * sp.tox * kx, sa * sp.tox * kx); x.rotate(u.ta); x.scale(kx, ky); x.drawImage(sp.tur, -sp.tw / 2, -sp.th / 2, sp.tw, sp.th); x.restore(); }
     x.restore();
     if (z < 0.7 && u.d.cat !== 'sea') this.marker(x, u, z);
     this.unitHud(x, u, sel);
@@ -10408,12 +10401,15 @@ const Menu = {
    (random spread, AI) never drifts between machines.
 
    Transports
-     · Online (default, works on GitHub Pages): WebRTC data channels
-       between browsers. The public PeerJS broker only introduces the
-       players; the host registers its 5-letter join code and the game
-       traffic then flows peer to peer (TURN relay as a fallback).
+     · Cloud relay (default, works on GitHub Pages): an HTTPS relay on the
+       free public smee.io service. Every player opens one Server-Sent
+       Events stream and posts orders/snapshots back to the same channel.
+       Works across devices and networks with no install, account, port
+       forwarding, same-Wi-Fi requirement or WebRTC NAT traversal.
+     · Peer-to-peer: WebRTC data channels through the free PeerJS broker.
+       Faster when a direct route exists, but strict NATs can block it.
      · Same computer: BroadcastChannel between browser tabs / windows.
-     · Relay server: WebSocket relay — `python3 server.py` or
+     · Relay server: self-hosted WebSocket relay — `python3 server.py` or
        `node server.js` serves the game and relays room traffic.
 
    Traffic (host → clients): one full save at start, then ~8 snapshots/s
@@ -10452,7 +10448,81 @@ class WsLink {
   close() { try { this.ws.close(); } catch (e) { /* closed */ } }
 }
 
-// Online: PeerJS (WebRTC) loaded on demand, from cdnjs with unpkg as a fallback
+/* Online relay: smee.io is a free public HTTPS relay that needs no account or
+   installation. A channel is just a name: everyone opens one EventSource and
+   POSTs outgoing messages to the same URL, and smee broadcasts each message to
+   every listener. Channels only exist while players are connected, so there is
+   no room server to run and no same-network requirement. Messages carry the
+   sender id, so a player ignores the echo of their own posts. Large messages
+   (the initial save on a big map) are split into ordered chunks. */
+const CLOUD_PREFIX = 'cityra-v3-';
+class CloudLink {
+  constructor(room, onMsg) {
+    this.id = 'C' + Math.random().toString(36).slice(2, 10);
+    this.onMsg = onMsg; this.seq = 0; this.chunkSeq = 0; this.chunks = {};
+    this.q = []; this.sending = false; this.fails = 0; this.ready = false; this.dead = false;
+    this.url = 'https://smee.io/' + CLOUD_PREFIX + encodeURIComponent(room);
+    try { this.es = new EventSource(this.url); }
+    catch (e) { setTimeout(() => onMsg(null, { t: 'error', why: 'this browser cannot open a cloud relay stream' }), 0); return; }
+    this.timer = setTimeout(() => { if (!this.ready && !this.dead) onMsg(null, { t: 'error', why: 'could not reach the cloud relay — check your internet connection' }); }, 15000);
+    this.es.addEventListener('ready', () => this.up());
+    this.es.onopen = () => this.up();
+    this.es.onmessage = (e) => this.onData(e.data);
+    this.es.onerror = () => { if (!this.dead) this.onMsg(null, { t: 'cloudStatus', why: this.ready ? 'Cloud relay lost — reconnecting…' : 'Connecting to the cloud relay…' }); };
+  }
+  up() { if (this.dead) return; this.ready = true; clearTimeout(this.timer); this.onMsg(null, { t: 'open' }); }
+  onData(raw) {
+    let ev; try { ev = JSON.parse(raw); } catch (e) { return; }
+    const body = typeof ev.body === 'string' ? ev.body : ev.body ? JSON.stringify(ev.body) : '';
+    if (!body) return;
+    let m; try { m = JSON.parse(body); } catch (e) { return; }
+    if (!m || m.f === this.id) return;
+    if (m.chunk != null) return this.onChunk(m);
+    this.deliver(m);
+  }
+  onChunk(m) {
+    const key = m.f + ':' + m.chunk;
+    let c = this.chunks[key];
+    if (!c) c = this.chunks[key] = { n: m.n, parts: [], got: 0 };
+    if (m.i >= 0 && m.i < c.n && c.parts[m.i] == null) { c.parts[m.i] = m.data; c.got++; }
+    if (c.got !== c.n) return;
+    delete this.chunks[key];
+    try { this.deliver(JSON.parse(c.parts.join(''))); } catch (e) { /* partial or corrupt */ }
+  }
+  deliver(m) { if (m && m.f !== this.id && (!m.to || m.to === this.id)) this.onMsg(m.f, m.d); }
+  send(d, to) {
+    if (this.dead) return;
+    const env = JSON.stringify({ f: this.id, to: to || null, n: ++this.seq, d });
+    if (d.t === 'bye' || d.t === 'closed') return this.post(env, true);
+    // smee's JSON body limit is 100 KB, including the JSON escaping of the
+    // chunk's data string, so keep raw chunks comfortably below it.
+    const max = 60000;
+    if (env.length <= max) this.enqueue({ body: env, snap: d.t === 'snap' });
+    else {
+      const id = this.id + '-' + (++this.chunkSeq), n = Math.ceil(env.length / max);
+      for (let i = 0; i < n; i++) this.enqueue({ body: JSON.stringify({ f: this.id, to: to || null, chunk: id, i, n, data: env.slice(i * max, (i + 1) * max) }), snap: false });
+    }
+  }
+  enqueue(item) {
+    // Coalesce a queued snapshot with the next one: a slow link should catch up
+    // on the latest world, not replay every stale frame. Order is preserved.
+    if (item.snap && this.q.length && this.q[this.q.length - 1].snap) this.q[this.q.length - 1] = item;
+    else this.q.push(item);
+    this.pump();
+  }
+  pump() {
+    if (this.sending || !this.q.length || this.dead) return;
+    this.sending = true;
+    fetch(this.url, { method: 'POST', mode: 'cors', headers: { 'Content-Type': 'application/json' }, body: this.q.shift().body })
+      .then((r) => { if (!r.ok) throw new Error('relay ' + r.status); this.fails = 0; })
+      .catch(() => { this.fails++; if (this.fails === 3 && !this.dead) this.onMsg(null, { t: 'cloudStatus', why: 'Cloud relay is slow or refusing messages — retrying…' }); })
+      .finally(() => { this.sending = false; if (!this.dead) this.pump(); });
+  }
+  post(body, keepalive) { fetch(this.url, { method: 'POST', mode: 'cors', headers: { 'Content-Type': 'application/json' }, body, keepalive: !!keepalive }).catch(() => {}); }
+  close() { this.dead = true; clearTimeout(this.timer); try { this.es.close(); } catch (e) { /* gone */ } this.q.length = 0; }
+}
+
+// Peer-to-peer: PeerJS (WebRTC) loaded on demand, from cdnjs with unpkg as a fallback
 const PEER_PREFIX = 'cityra-v2-';
 function loadPeerJs() {
   if (window.Peer) return Promise.resolve();
@@ -10469,7 +10539,9 @@ class PeerLink {
   }
   start(room) {
     if (this.dead) return;
-    const P = window.Peer, cfg = { debug: 0 };
+    const P = window.Peer, cfg = { debug: 0, config: { iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' },
+    ] } };
     this.peer = this.host ? new P(PEER_PREFIX + room, cfg) : new P(cfg);
     this.peer.on('open', (id) => {
       this.id = id;
@@ -10502,7 +10574,7 @@ const NET_SCOPE = () => ({ Orders, Eco, World, Strike, Dip, Civ, Market, AILab, 
 
 const Net = {
   active: false, host: false, client: false, link: null, room: '', name: 'Commander', peers: {}, me: null, faction: 0,
-  transport: 'online', url: '', status: '', lobby: null, chat: [],
+  transport: 'online', url: '', status: '', lobby: null, chat: [], startMsg: null, helloT: null,
 
   /* ---------- lobby ---------- */
   render() {
@@ -10512,11 +10584,11 @@ const Net = {
     const peers = Object.values(this.peers);
     const o = Menu.opts, slots = [o.player, ...o.ais.map((a) => a.key)];
     el.innerHTML = `
-      <p class="sub small">The host runs the battle; everyone else joins with the host’s code. <b>Online</b> connects browsers directly over the internet (the free PeerJS service only introduces players; nothing to install). <b>Same computer</b> links browser tabs. <b>Relay server</b> is for LANs that block peer-to-peer: run <code>python3 server.py</code> in the game folder.</p>
+      <p class="sub small">The host runs the battle; everyone else joins with the host’s code. <b>Cloud relay</b> (default) carries the game through a free public HTTPS relay, so players on different Wi-Fi, mobile networks or behind firewalls can join — nothing to install. <b>Peer-to-peer</b> tries a direct WebRTC link (faster when it works). <b>Same computer</b> links browser tabs. <b>Self-hosted relay</b> runs <code>python3 server.py</code> in the game folder.</p>
       ${this.host && this.room ? `<div class="joincode"><span>Join code</span><b>${U.esc(this.room)}</b><button class="cmd" id="mp-copy" type="button">Copy invite link</button></div>` : ''}
       <div class="grid2">
         <label>Your name <input id="mp-name" value="${U.esc(this.name)}" maxlength="20"></label>
-        <label>Connection <select id="mp-tr"><option value="online" ${this.transport === 'online' ? 'selected' : ''}>Online (join code)</option><option value="local" ${this.transport === 'local' ? 'selected' : ''}>Same computer (tabs)</option><option value="ws" ${this.transport === 'ws' ? 'selected' : ''}>Relay server</option></select></label>
+        <label>Connection <select id="mp-tr"><option value="online" ${this.transport === 'online' ? 'selected' : ''}>Cloud relay (no setup)</option><option value="p2p" ${this.transport === 'p2p' ? 'selected' : ''}>Peer-to-peer (WebRTC)</option><option value="local" ${this.transport === 'local' ? 'selected' : ''}>Same computer (tabs)</option><option value="ws" ${this.transport === 'ws' ? 'selected' : ''}>Self-hosted relay</option></select></label>
         <label ${this.transport === 'ws' ? '' : 'hidden'}>Relay address <input id="mp-url" value="${U.esc(defUrl)}"></label>
         <label ${this.host ? 'hidden' : ''}>Join code <input id="mp-room" value="${U.esc(this.room || '')}" placeholder="5 letters, e.g. K7QPX" maxlength="16" autocomplete="off"></label>
       </div>
@@ -10543,13 +10615,14 @@ const Net = {
     this.host = asHost; this.client = !asHost; this.active = true; this.peers = {}; this.status = 'Connecting…'; this.chat = [];
     Game.backgroundClock(true);
     const on = (from, d) => this.recv(from, d);
-    try { this.link = this.transport === 'ws' ? new WsLink(this.url || ('ws://' + location.host + '/ws'), this.room, on) : this.transport === 'online' ? new PeerLink(this.room, asHost, on) : new LocalLink(this.room, on); }
+    try { this.link = this.transport === 'ws' ? new WsLink(this.url || ('ws://' + location.host + '/ws'), this.room, on) : this.transport === 'p2p' ? new PeerLink(this.room, asHost, on) : this.transport === 'local' ? new LocalLink(this.room, on) : new CloudLink(this.room, on); }
     catch (e) { this.status = 'Could not connect: ' + e.message; this.active = false; }
     this.render();
   },
   leave(quiet) {
     if (this.link) { if (this.client) this.link.send({ t: 'bye' }); else if (this.host) this.link.send({ t: 'closed' }); this.link.close(); }
     const wasClient = this.client && G.running;
+    clearInterval(this.helloT); this.helloT = null; this.startMsg = null;
     this.link = null; this.active = false; this.host = false; this.client = false; this.peers = {}; this.lobby = null;
     Game.backgroundClock(false);
     if (!quiet) { this.status = 'Left the room'; this.render(); }
@@ -10568,16 +10641,34 @@ const Net = {
 
   recv(from, d) {
     switch (d.t) {
-      case 'open': this.status = this.host ? 'Waiting for players — share the join code ' + this.room : 'Connected, saying hello…'; if (this.client) this.send({ t: 'hello', name: this.name }); this.render(); break;
-      case 'closed': case 'error': if (this.client || d.t === 'error') { this.status = d.t === 'error' ? 'Connection failed: ' + (d.why || (this.transport === 'ws' ? 'is the relay running?' : 'unknown error')) : 'The host closed the room'; if (this.client && G.running) UI.msg('Disconnected from host', 'bad'); this.active = false; this.render(); } break;
+      case 'open': {
+        this.active = true;
+        this.status = this.host ? 'Waiting for players — share the join code ' + this.room : 'Connected, saying hello…';
+        if (this.client) {
+          this.send({ t: 'hello', name: this.name });
+          clearInterval(this.helloT); let tries = 0;
+          this.helloT = setInterval(() => {
+            if (!this.active || !this.client || this.lobby || this.ready || ++tries > 8) { clearInterval(this.helloT); this.helloT = null; return; }
+            this.send({ t: 'hello', name: this.name });
+          }, 2000);
+        }
+        this.render(); break; }
+      case 'cloudStatus': this.status = d.why || this.status; this.render(); break;
+      case 'closed': case 'error': if (this.client || d.t === 'error') {
+        this.status = d.t === 'error' ? 'Connection failed: ' + (d.why || (this.transport === 'ws' ? 'is the relay running?' : 'unknown error')) : 'The host closed the room';
+        if (this.client && G.running) { UI.msg('Disconnected from host', 'bad'); G.running = false; Game.backgroundClock(false); UI.closeWins(); $('game').hidden = true; Menu.show(); }
+        this.active = false; clearInterval(this.helloT); this.helloT = null; this.render();
+      } break;
       case 'hello': if (!this.host) break; {
+        const prev = this.peers[from];
+        if (prev) { prev.name = String(d.name || prev.name || 'Player').slice(0, 20); this.status = prev.name + ' reconnected'; this.pushLobby(); if (this.startMsg) this.sendStart(from); break; }
         const o = Menu.opts, taken = new Set(Object.values(this.peers).map((p) => p.slot)), free = o.ais.findIndex((a, i) => !taken.has(i + 1));
         this.peers[from] = { id: from, name: String(d.name || 'Player').slice(0, 20), slot: free >= 0 ? free + 1 : -1 };
-        this.status = this.peers[from].name + ' joined'; this.pushLobby(); break; }
+        this.status = this.peers[from].name + ' joined'; this.pushLobby(); if (this.startMsg) this.sendStart(from); break; }
       case 'bye': if (this.host && this.peers[from]) { const p = this.peers[from]; delete this.peers[from]; this.status = p.name + ' left'; if (G.running && p.slot > 0 && fac(p.slot)) { fac(p.slot).human = false; UI.msg(p.name + ' left — their nation is now under AI command', 'warn'); const f = fac(p.slot); f.isAI = true; AI.setup(f, 'normal'); } this.pushLobby(); } break;
-      case 'lobby': if (this.client) { this.lobby = d; this.render(); } break;
+      case 'lobby': if (this.client) { this.lobby = d; this.status = 'In the lobby — waiting for the host'; clearInterval(this.helloT); this.helloT = null; this.render(); } break;
       case 'chat': this.chat.push({ n: d.n, m: d.m }); if (G.running) UI.msg(d.n + ': ' + d.m, 'info'); else this.render(); break;
-      case 'start': if (this.client) this.clientStart(d); break;
+      case 'start': if (this.client) { this.status = 'In battle'; clearInterval(this.helloT); this.helloT = null; this.clientStart(d); } break;
       case 'snap': if (this.client && this.ready) this.apply(d); break;
       case 'rpc': if (this.host) this.exec(from, d); break;
     }
@@ -10593,8 +10684,16 @@ const Net = {
     this.sent = {}; this.acc = 0; this.slowAcc = 0; this.ev = []; this.tick = 0;
     const save = SaveLoad.serialize(), assign = {};
     for (const p of peers) assign[p.id] = p.slot;
-    this.send({ t: 'start', save, assign, names: Object.fromEntries(peers.map((p) => [p.slot, p.name])) });
+    this.startMsg = { t: 'start', save, assign, names: Object.fromEntries(peers.map((p) => [p.slot, p.name])) };
+    this.send(this.startMsg);
+    this.status = 'Battle in progress — ' + peers.length + ' connected';
     UI.msg('Multiplayer battle started — ' + peers.length + ' player' + (peers.length > 1 ? 's' : '') + ' connected', 'good');
+  },
+  // a late join or a reconnect needs the same start save; unknown peers spectate
+  sendStart(to) {
+    if (!this.startMsg) return;
+    if (to && this.startMsg.assign[to] == null) this.startMsg.assign[to] = -1;
+    this.send(this.startMsg, to);
   },
   // serialize call arguments: entities, factions and settlements travel as ids
   enc(v) {
@@ -10770,7 +10869,7 @@ const Net = {
     const s = Store.get('mp', null); if (s) { this.name = s.name || this.name; this.transport = s.transport || 'online'; this.url = s.url || ''; }
     // invite links: ?join=CODE opens the multiplayer window ready to join
     const q = new URLSearchParams(location.search), code = (q.get('join') || '').toUpperCase().replace(/[^A-Z0-9-]/g, '');
-    if (code) window.addEventListener('load', () => setTimeout(() => { this.transport = ['local', 'ws'].includes(q.get('via')) ? q.get('via') : 'online'; this.room = code; UI.toggleWin('w-mp'); this.render(); }, 50));
+    if (code) window.addEventListener('load', () => setTimeout(() => { this.transport = ['local', 'ws', 'p2p'].includes(q.get('via')) ? q.get('via') : 'online'; this.room = code; UI.toggleWin('w-mp'); this.render(); }, 50));
     window.addEventListener('beforeunload', () => { if (this.active) this.leave(true); });
   },
 };

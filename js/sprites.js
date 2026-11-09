@@ -161,21 +161,22 @@ SPR.unit = function (key, fk, aiTier = 1) {
   if (!out.inf) out.shadow = silhouette(out.body, d.cat === 'air' ? 'rgba(0,0,0,0.3)' : 'rgba(0,0,0,0.38)', d.cat === 'air' ? 3 : 2);
   if (out.tur) out.turShadow = silhouette(out.tur, 'rgba(0,0,0,0.3)', 2);
   out.wreck = silhouette(out.body, 'rgba(26,22,20,0.92)');
-  // Visual scale. Ground and naval hulls keep their true length. Aircraft are
-  // measured on BOTH axes (fuselage and wingspan) against the bomber-anchored
-  // readable footprint in realism.js; robotic airframes also grow with AI tier.
+  // One exact 10 m tile scale for every unit. Ground hulls and aircraft are
+  // scaled on both real axes (length and width / wingspan), so a 10 m tank, a
+  // 19 m fighter and a 56 m bomber keep their true relative sizes. Robotic
+  // airframes no longer grow with the AI tier; tier shows in their art only.
   if (out.inf) out.k = d.len ? (d.len * SCALE.PX_PER_M) / 10 : 1;
-  else if (d.len && d.cat === 'air') {
-    const tierK = d.robotic ? (AI_TIER_STYLE[U.clamp(aiTier | 0, 1, 12)] || AI_TIER_STYLE[1]).scale : 1;
-    out.kx = ((d.viewLen || d.len) * SCALE.PX_PER_M / Math.max(4, out.w - 6)) * tierK;
-    out.ky = ((d.viewWid || d.wid) * SCALE.PX_PER_M / Math.max(4, out.h - 6)) * tierK;
-    // Rotorcraft already draw a circular disc that spans their real width:
-    // stretch those uniformly so the blades stay round. Fixed-wing aircraft
-    // get a bounded two-axis correction instead of an extreme squash.
+  else if (d.cat === 'air') {
+    out.kx = (d.viewLen || d.len || 10) * SCALE.PX_PER_M / Math.max(4, out.w - 6);
+    out.ky = (d.viewWid || d.wid || d.len || 10) * SCALE.PX_PER_M / Math.max(4, out.h - 6);
+    // Rotorcraft draw a circular disc; stretch them uniformly so blades stay round.
     if (out.rotor) out.ky = out.kx;
-    else out.ky = U.clamp(out.ky, out.kx * 0.65, out.kx * 1.5);
     out.k = out.kx;
-  } else out.k = d.len ? (d.len * SCALE.PX_PER_M) / Math.max(4, out.w - 10) : 1;
+  } else {
+    out.kx = (d.len || 10) * SCALE.PX_PER_M / Math.max(4, out.w - 10);
+    out.ky = (d.wid || d.len || 10) * SCALE.PX_PER_M / Math.max(4, out.h - 10);
+    out.k = out.kx;
+  }
   if (out.kx == null) out.kx = out.ky = out.k;
   SPR.cache.set(ck, out);
   return out;

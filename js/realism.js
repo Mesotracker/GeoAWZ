@@ -24,13 +24,6 @@ const SCALE = {
   KM_PER_TILE: 0.01,                                     // procedural maps: 10 m per tile
 };
 
-/* Aircraft readability: the 48 m strategic bomber is already drawn at true
-   scale. A gentle power curve lifts the 1–19 m airframes to a size the player
-   can actually see at tactical zoom without enlarging the bomber, reversing
-   the real-world size order, or changing the physical stats in the tooltips.
-   Sprites use viewLen / viewWid; len / wid stay physically accurate. */
-const AIR_VIEW = { REF_M: 48, CURVE: 0.55, MIN_M: 8.5 };
-
 /* units: [length m, width m, speed m/s, sight m (game), figures for infantry squads] */
 const REAL_UNITS = {
   rifle: [1.2, 0.6, 4.2, 140, 4], mg: [1.2, 0.6, 3.6, 140, 3], sniper: [1.3, 0.6, 4.0, 220, 2], engineer: [1.1, 0.6, 4.0, 120, 3],
@@ -73,13 +66,6 @@ const REAL_MISSILES = { cruise: 45, srbm: 50, cluster: 8, thermo: 120, ballistic
 
 const Realism = {
   apply() { this.convert(REAL_UNITS, REAL_WEAPONS, REAL_BLDS, false); for (const k in REAL_MISSILES) if (MISSILES[k]) MISSILES[k].splash = Math.round(REAL_MISSILES[k] * SCALE.PX_PER_M); },
-  // Visual size of one real-world aircraft dimension. The bomber and anything
-  // larger stay exact; smaller aircraft compress toward it for RTS readability.
-  airViewM(m) {
-    if (!(m > 0)) return AIR_VIEW.MIN_M;
-    if (m >= AIR_VIEW.REF_M) return m;
-    return Math.max(m, AIR_VIEW.MIN_M, AIR_VIEW.REF_M * Math.pow(m / AIR_VIEW.REF_M, AIR_VIEW.CURVE));
-  },
   // direct = ranges are already game metres (Napoleonic weapons are short-ranged enough to need no compression)
   convert(units, weapons, blds, direct) {
     const P = SCALE.PX_PER_M;
@@ -87,9 +73,11 @@ const Realism = {
       const d = UNITS[k], R = units[k]; if (!d) continue;
       const [len, wid, spd, sight, figs] = R;
       d.len = len; d.wid = wid; d.spd = spd * P; d.sight = sight / SCALE.M_PER_TILE;
-      if (d.cat === 'air') {
-        d.viewLen = this.airViewM(len); d.viewWid = this.airViewM(wid);
-      } else { delete d.viewLen; delete d.viewWid; }
+      // One exact 10 m tile scale everywhere: aircraft keep their real
+      // fuselage length and wingspan, so robotic and crewed airframes of the
+      // same physical size are drawn at the same size.
+      if (d.cat === 'air') { d.viewLen = len; d.viewWid = wid; }
+      else { delete d.viewLen; delete d.viewWid; }
       if (d.form) { // drilled formation: ranks x files with spacing (m)
         const [ranks, files, sx, sy] = d.form; d.figs = ranks * files;
         d.r = Math.max(4, 0.5 * Math.sqrt(Math.max(len, ranks * sy) * Math.max(wid, files * sx)) * P);

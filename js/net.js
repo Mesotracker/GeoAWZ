@@ -7,12 +7,15 @@
    (random spread, AI) never drifts between machines.
 
    Transports
-     · Online (default, works on GitHub Pages): WebRTC data channels
-       between browsers. The public PeerJS broker only introduces the
-       players; the host registers its 5-letter join code and the game
-       traffic then flows peer to peer (TURN relay as a fallback).
+     · Cloud relay (default, works on GitHub Pages): an HTTPS relay on the
+       free public smee.io service. Every player opens one Server-Sent
+       Events stream and posts orders/snapshots back to the same channel.
+       Works across devices and networks with no install, account, port
+       forwarding, same-Wi-Fi requirement or WebRTC NAT traversal.
+     · Peer-to-peer: WebRTC data channels through the free PeerJS broker.
+       Faster when a direct route exists, but strict NATs can block it.
      · Same computer: BroadcastChannel between browser tabs / windows.
-     · Relay server: WebSocket relay — `python3 server.py` or
+     · Relay server: self-hosted WebSocket relay — `python3 server.py` or
        `node server.js` serves the game and relays room traffic.
 
    Traffic (host → clients): one full save at start, then ~8 snapshots/s
@@ -51,7 +54,81 @@ class WsLink {
   close() { try { this.ws.close(); } catch (e) { /* closed */ } }
 }
 
-// Online: PeerJS (WebRTC) loaded on demand, from cdnjs with unpkg as a fallback
+/* Online relay: smee.io is a free public HTTPS relay that needs no account or
+   installation. A channel is just a name: everyone opens one EventSource and
+   POSTs outgoing messages to the same URL, and smee broadcasts each message to
+   every listener. Channels only exist while players are connected, so there is
+   no room server to run and no same-network requirement. Messages carry the
+   sender id, so a player ignores the echo of their own posts. Large messages
+   (the initial save on a big map) are split into ordered chunks. */
+const CLOUD_PREFIX = 'cityra-v3-';
+class CloudLink {
+  constructor(room, onMsg) {
+    this.id = 'C' + Math.random().toString(36).slice(2, 10);
+    this.onMsg = onMsg; this.seq = 0; this.chunkSeq = 0; this.chunks = {};
+    this.q = []; this.sending = false; this.fails = 0; this.ready = false; this.dead = false;
+    this.url = 'https://smee.io/' + CLOUD_PREFIX + encodeURIComponent(room);
+    try { this.es = new EventSource(this.url); }
+    catch (e) { setTimeout(() => onMsg(null, { t: 'error', why: 'this browser cannot open a cloud relay stream' }), 0); return; }
+    this.timer = setTimeout(() => { if (!this.ready && !this.dead) onMsg(null, { t: 'error', why: 'could not reach the cloud relay — check your internet connection' }); }, 15000);
+    this.es.addEventListener('ready', () => this.up());
+    this.es.onopen = () => this.up();
+    this.es.onmessage = (e) => this.onData(e.data);
+    this.es.onerror = () => { if (!this.dead) this.onMsg(null, { t: 'cloudStatus', why: this.ready ? 'Cloud relay lost — reconnecting…' : 'Connecting to the cloud relay…' }); };
+  }
+  up() { if (this.dead) return; this.ready = true; clearTimeout(this.timer); this.onMsg(null, { t: 'open' }); }
+  onData(raw) {
+    let ev; try { ev = JSON.parse(raw); } catch (e) { return; }
+    const body = typeof ev.body === 'string' ? ev.body : ev.body ? JSON.stringify(ev.body) : '';
+    if (!body) return;
+    let m; try { m = JSON.parse(body); } catch (e) { return; }
+    if (!m || m.f === this.id) return;
+    if (m.chunk != null) return this.onChunk(m);
+    this.deliver(m);
+  }
+  onChunk(m) {
+    const key = m.f + ':' + m.chunk;
+    let c = this.chunks[key];
+    if (!c) c = this.chunks[key] = { n: m.n, parts: [], got: 0 };
+    if (m.i >= 0 && m.i < c.n && c.parts[m.i] == null) { c.parts[m.i] = m.data; c.got++; }
+    if (c.got !== c.n) return;
+    delete this.chunks[key];
+    try { this.deliver(JSON.parse(c.parts.join(''))); } catch (e) { /* partial or corrupt */ }
+  }
+  deliver(m) { if (m && m.f !== this.id && (!m.to || m.to === this.id)) this.onMsg(m.f, m.d); }
+  send(d, to) {
+    if (this.dead) return;
+    const env = JSON.stringify({ f: this.id, to: to || null, n: ++this.seq, d });
+    if (d.t === 'bye' || d.t === 'closed') return this.post(env, true);
+    // smee's JSON body limit is 100 KB, including the JSON escaping of the
+    // chunk's data string, so keep raw chunks comfortably below it.
+    const max = 60000;
+    if (env.length <= max) this.enqueue({ body: env, snap: d.t === 'snap' });
+    else {
+      const id = this.id + '-' + (++this.chunkSeq), n = Math.ceil(env.length / max);
+      for (let i = 0; i < n; i++) this.enqueue({ body: JSON.stringify({ f: this.id, to: to || null, chunk: id, i, n, data: env.slice(i * max, (i + 1) * max) }), snap: false });
+    }
+  }
+  enqueue(item) {
+    // Coalesce a queued snapshot with the next one: a slow link should catch up
+    // on the latest world, not replay every stale frame. Order is preserved.
+    if (item.snap && this.q.length && this.q[this.q.length - 1].snap) this.q[this.q.length - 1] = item;
+    else this.q.push(item);
+    this.pump();
+  }
+  pump() {
+    if (this.sending || !this.q.length || this.dead) return;
+    this.sending = true;
+    fetch(this.url, { method: 'POST', mode: 'cors', headers: { 'Content-Type': 'application/json' }, body: this.q.shift().body })
+      .then((r) => { if (!r.ok) throw new Error('relay ' + r.status); this.fails = 0; })
+      .catch(() => { this.fails++; if (this.fails === 3 && !this.dead) this.onMsg(null, { t: 'cloudStatus', why: 'Cloud relay is slow or refusing messages — retrying…' }); })
+      .finally(() => { this.sending = false; if (!this.dead) this.pump(); });
+  }
+  post(body, keepalive) { fetch(this.url, { method: 'POST', mode: 'cors', headers: { 'Content-Type': 'application/json' }, body, keepalive: !!keepalive }).catch(() => {}); }
+  close() { this.dead = true; clearTimeout(this.timer); try { this.es.close(); } catch (e) { /* gone */ } this.q.length = 0; }
+}
+
+// Peer-to-peer: PeerJS (WebRTC) loaded on demand, from cdnjs with unpkg as a fallback
 const PEER_PREFIX = 'cityra-v2-';
 function loadPeerJs() {
   if (window.Peer) return Promise.resolve();
@@ -68,7 +145,9 @@ class PeerLink {
   }
   start(room) {
     if (this.dead) return;
-    const P = window.Peer, cfg = { debug: 0 };
+    const P = window.Peer, cfg = { debug: 0, config: { iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' },
+    ] } };
     this.peer = this.host ? new P(PEER_PREFIX + room, cfg) : new P(cfg);
     this.peer.on('open', (id) => {
       this.id = id;
@@ -101,7 +180,7 @@ const NET_SCOPE = () => ({ Orders, Eco, World, Strike, Dip, Civ, Market, AILab, 
 
 const Net = {
   active: false, host: false, client: false, link: null, room: '', name: 'Commander', peers: {}, me: null, faction: 0,
-  transport: 'online', url: '', status: '', lobby: null, chat: [],
+  transport: 'online', url: '', status: '', lobby: null, chat: [], startMsg: null, helloT: null,
 
   /* ---------- lobby ---------- */
   render() {
@@ -111,11 +190,11 @@ const Net = {
     const peers = Object.values(this.peers);
     const o = Menu.opts, slots = [o.player, ...o.ais.map((a) => a.key)];
     el.innerHTML = `
-      <p class="sub small">The host runs the battle; everyone else joins with the host’s code. <b>Online</b> connects browsers directly over the internet (the free PeerJS service only introduces players; nothing to install). <b>Same computer</b> links browser tabs. <b>Relay server</b> is for LANs that block peer-to-peer: run <code>python3 server.py</code> in the game folder.</p>
+      <p class="sub small">The host runs the battle; everyone else joins with the host’s code. <b>Cloud relay</b> (default) carries the game through a free public HTTPS relay, so players on different Wi-Fi, mobile networks or behind firewalls can join — nothing to install. <b>Peer-to-peer</b> tries a direct WebRTC link (faster when it works). <b>Same computer</b> links browser tabs. <b>Self-hosted relay</b> runs <code>python3 server.py</code> in the game folder.</p>
       ${this.host && this.room ? `<div class="joincode"><span>Join code</span><b>${U.esc(this.room)}</b><button class="cmd" id="mp-copy" type="button">Copy invite link</button></div>` : ''}
       <div class="grid2">
         <label>Your name <input id="mp-name" value="${U.esc(this.name)}" maxlength="20"></label>
-        <label>Connection <select id="mp-tr"><option value="online" ${this.transport === 'online' ? 'selected' : ''}>Online (join code)</option><option value="local" ${this.transport === 'local' ? 'selected' : ''}>Same computer (tabs)</option><option value="ws" ${this.transport === 'ws' ? 'selected' : ''}>Relay server</option></select></label>
+        <label>Connection <select id="mp-tr"><option value="online" ${this.transport === 'online' ? 'selected' : ''}>Cloud relay (no setup)</option><option value="p2p" ${this.transport === 'p2p' ? 'selected' : ''}>Peer-to-peer (WebRTC)</option><option value="local" ${this.transport === 'local' ? 'selected' : ''}>Same computer (tabs)</option><option value="ws" ${this.transport === 'ws' ? 'selected' : ''}>Self-hosted relay</option></select></label>
         <label ${this.transport === 'ws' ? '' : 'hidden'}>Relay address <input id="mp-url" value="${U.esc(defUrl)}"></label>
         <label ${this.host ? 'hidden' : ''}>Join code <input id="mp-room" value="${U.esc(this.room || '')}" placeholder="5 letters, e.g. K7QPX" maxlength="16" autocomplete="off"></label>
       </div>
@@ -142,13 +221,14 @@ const Net = {
     this.host = asHost; this.client = !asHost; this.active = true; this.peers = {}; this.status = 'Connecting…'; this.chat = [];
     Game.backgroundClock(true);
     const on = (from, d) => this.recv(from, d);
-    try { this.link = this.transport === 'ws' ? new WsLink(this.url || ('ws://' + location.host + '/ws'), this.room, on) : this.transport === 'online' ? new PeerLink(this.room, asHost, on) : new LocalLink(this.room, on); }
+    try { this.link = this.transport === 'ws' ? new WsLink(this.url || ('ws://' + location.host + '/ws'), this.room, on) : this.transport === 'p2p' ? new PeerLink(this.room, asHost, on) : this.transport === 'local' ? new LocalLink(this.room, on) : new CloudLink(this.room, on); }
     catch (e) { this.status = 'Could not connect: ' + e.message; this.active = false; }
     this.render();
   },
   leave(quiet) {
     if (this.link) { if (this.client) this.link.send({ t: 'bye' }); else if (this.host) this.link.send({ t: 'closed' }); this.link.close(); }
     const wasClient = this.client && G.running;
+    clearInterval(this.helloT); this.helloT = null; this.startMsg = null;
     this.link = null; this.active = false; this.host = false; this.client = false; this.peers = {}; this.lobby = null;
     Game.backgroundClock(false);
     if (!quiet) { this.status = 'Left the room'; this.render(); }
@@ -167,16 +247,34 @@ const Net = {
 
   recv(from, d) {
     switch (d.t) {
-      case 'open': this.status = this.host ? 'Waiting for players — share the join code ' + this.room : 'Connected, saying hello…'; if (this.client) this.send({ t: 'hello', name: this.name }); this.render(); break;
-      case 'closed': case 'error': if (this.client || d.t === 'error') { this.status = d.t === 'error' ? 'Connection failed: ' + (d.why || (this.transport === 'ws' ? 'is the relay running?' : 'unknown error')) : 'The host closed the room'; if (this.client && G.running) UI.msg('Disconnected from host', 'bad'); this.active = false; this.render(); } break;
+      case 'open': {
+        this.active = true;
+        this.status = this.host ? 'Waiting for players — share the join code ' + this.room : 'Connected, saying hello…';
+        if (this.client) {
+          this.send({ t: 'hello', name: this.name });
+          clearInterval(this.helloT); let tries = 0;
+          this.helloT = setInterval(() => {
+            if (!this.active || !this.client || this.lobby || this.ready || ++tries > 8) { clearInterval(this.helloT); this.helloT = null; return; }
+            this.send({ t: 'hello', name: this.name });
+          }, 2000);
+        }
+        this.render(); break; }
+      case 'cloudStatus': this.status = d.why || this.status; this.render(); break;
+      case 'closed': case 'error': if (this.client || d.t === 'error') {
+        this.status = d.t === 'error' ? 'Connection failed: ' + (d.why || (this.transport === 'ws' ? 'is the relay running?' : 'unknown error')) : 'The host closed the room';
+        if (this.client && G.running) { UI.msg('Disconnected from host', 'bad'); G.running = false; Game.backgroundClock(false); UI.closeWins(); $('game').hidden = true; Menu.show(); }
+        this.active = false; clearInterval(this.helloT); this.helloT = null; this.render();
+      } break;
       case 'hello': if (!this.host) break; {
+        const prev = this.peers[from];
+        if (prev) { prev.name = String(d.name || prev.name || 'Player').slice(0, 20); this.status = prev.name + ' reconnected'; this.pushLobby(); if (this.startMsg) this.sendStart(from); break; }
         const o = Menu.opts, taken = new Set(Object.values(this.peers).map((p) => p.slot)), free = o.ais.findIndex((a, i) => !taken.has(i + 1));
         this.peers[from] = { id: from, name: String(d.name || 'Player').slice(0, 20), slot: free >= 0 ? free + 1 : -1 };
-        this.status = this.peers[from].name + ' joined'; this.pushLobby(); break; }
+        this.status = this.peers[from].name + ' joined'; this.pushLobby(); if (this.startMsg) this.sendStart(from); break; }
       case 'bye': if (this.host && this.peers[from]) { const p = this.peers[from]; delete this.peers[from]; this.status = p.name + ' left'; if (G.running && p.slot > 0 && fac(p.slot)) { fac(p.slot).human = false; UI.msg(p.name + ' left — their nation is now under AI command', 'warn'); const f = fac(p.slot); f.isAI = true; AI.setup(f, 'normal'); } this.pushLobby(); } break;
-      case 'lobby': if (this.client) { this.lobby = d; this.render(); } break;
+      case 'lobby': if (this.client) { this.lobby = d; this.status = 'In the lobby — waiting for the host'; clearInterval(this.helloT); this.helloT = null; this.render(); } break;
       case 'chat': this.chat.push({ n: d.n, m: d.m }); if (G.running) UI.msg(d.n + ': ' + d.m, 'info'); else this.render(); break;
-      case 'start': if (this.client) this.clientStart(d); break;
+      case 'start': if (this.client) { this.status = 'In battle'; clearInterval(this.helloT); this.helloT = null; this.clientStart(d); } break;
       case 'snap': if (this.client && this.ready) this.apply(d); break;
       case 'rpc': if (this.host) this.exec(from, d); break;
     }
@@ -192,8 +290,16 @@ const Net = {
     this.sent = {}; this.acc = 0; this.slowAcc = 0; this.ev = []; this.tick = 0;
     const save = SaveLoad.serialize(), assign = {};
     for (const p of peers) assign[p.id] = p.slot;
-    this.send({ t: 'start', save, assign, names: Object.fromEntries(peers.map((p) => [p.slot, p.name])) });
+    this.startMsg = { t: 'start', save, assign, names: Object.fromEntries(peers.map((p) => [p.slot, p.name])) };
+    this.send(this.startMsg);
+    this.status = 'Battle in progress — ' + peers.length + ' connected';
     UI.msg('Multiplayer battle started — ' + peers.length + ' player' + (peers.length > 1 ? 's' : '') + ' connected', 'good');
+  },
+  // a late join or a reconnect needs the same start save; unknown peers spectate
+  sendStart(to) {
+    if (!this.startMsg) return;
+    if (to && this.startMsg.assign[to] == null) this.startMsg.assign[to] = -1;
+    this.send(this.startMsg, to);
   },
   // serialize call arguments: entities, factions and settlements travel as ids
   enc(v) {
@@ -369,7 +475,7 @@ const Net = {
     const s = Store.get('mp', null); if (s) { this.name = s.name || this.name; this.transport = s.transport || 'online'; this.url = s.url || ''; }
     // invite links: ?join=CODE opens the multiplayer window ready to join
     const q = new URLSearchParams(location.search), code = (q.get('join') || '').toUpperCase().replace(/[^A-Z0-9-]/g, '');
-    if (code) window.addEventListener('load', () => setTimeout(() => { this.transport = ['local', 'ws'].includes(q.get('via')) ? q.get('via') : 'online'; this.room = code; UI.toggleWin('w-mp'); this.render(); }, 50));
+    if (code) window.addEventListener('load', () => setTimeout(() => { this.transport = ['local', 'ws', 'p2p'].includes(q.get('via')) ? q.get('via') : 'online'; this.room = code; UI.toggleWin('w-mp'); this.render(); }, 50));
     window.addEventListener('beforeunload', () => { if (this.active) this.leave(true); });
   },
 };
